@@ -1,0 +1,110 @@
+---
+runtime: shiny
+output: html_document
+---
+  
+```{r echo=F,message=F}
+library(leaflet)
+library(raster)
+library(shinydashboard)
+library(ncdf4)
+library(shiny)
+library(ggmap)
+
+
+inputFile    = "../data/201509080000.tir.01.nc"
+inputVarName = "suhu"
+lldepth <- raster(inputFile)
+lldepth[Which(lldepth >= 220, cells=T)] <- NA #Set all cells <=0 to NA
+
+
+ext <- extent(lldepth)
+resol <- res(lldepth)
+projection(lldepth) <- "+proj=longlat +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0"
+
+#Project for leaflet
+depth <- projectRasterForLeaflet(lldepth)
+lon <- ncvar_get(nc_open("../data/201509080000.tir.01.nc"),"lon")
+lat <- ncvar_get(nc_open("../data/201509080000.tir.01.nc"),"lat")
+# extent(depth) <- c(xmin = lon[1],xmax= lon[length(lon)],ymin = lat[1],ymax = lat[length(lat)])
+
+pal <- colorNumeric(c( "darkred","red","grey","blue"), values(depth),
+                    na.color = "transparent")
+#Prepare UI
+sbwidth=10
+sidebar <- dashboardSidebar(width=sbwidth)
+body <- dashboardBody(
+  box( #https://stackoverflow.com/questions/31278938/how-can-i-make-my-shiny-leafletoutput-have-height-100-while-inside-a-navbarpa
+    div(class="outer",width = NULL, solidHeader = T, tags$style(type = "text/css", paste0(".outer {position: fixed; top: 10px; left: ", sbwidth, "px; right: 10px; bottom: 10px; overflow: hidden; padding: 0}")),
+        leafletOutput("map", width = "100%", height = "100%")
+    )
+  )
+)
+ui <- 
+  # dashboardPage(
+  
+  
+  body
+# )
+#
+#Server instance
+server <- function(input, output, session) {
+  output$map <- renderLeaflet({#Set extent
+    leaflet()  %>%
+      addTiles()  %>%
+      setView(120, -1, 4)
+    # %>%
+    # fitBounds(ext[1], ext[3], ext[2], ext[4])
+  })
+  
+  observe({#Observer to show Popups on click
+    click <- input$map_click
+    if (!is.null(click)) {
+      showpos(x=click$lng, y=click$lat)
+    }
+  })
+  
+  showpos <- function(x=NULL, y=NULL) {#Show popup on clicks
+    #Translate Lat-Lon to cell number using the unprojected raster
+    #This is because the projected raster is not in degrees, we cannot use it!
+    cell <- cellFromXY(lldepth, c(x, y))
+    if (!is.na(cell)) {#If the click is inside the raster...
+      xy <- xyFromCell(lldepth, cell) #Get the center of the cell
+      x <- xy[1]
+      y <- xy[2]
+      #Get row and column, to print later
+      rc <- rowColFromCell(lldepth, cell)
+      #Get value of the given cell
+      val = depth[cell]
+      joz = as.numeric(c(round(x,1),round(y, 1)))
+      lok = revgeocode(joz)
+      content <- paste0("Lokasi=","{",lok,"}",
+                        "; Lon=", round(x, 5),
+                        "; Lat=", round(y, 5),
+                        
+                        "; \n Brightness Temperature=", round(val, 1), " K")
+      
+      # content <- cat("; Lon=",round(x, 5),'\n',
+      #                "; Lat=",round(y, 5),'\n',
+      #                "; \n Brightness Temperature=", round(val, 1), " K")
+      proxy <- leafletProxy("map")
+      #add Popup
+      proxy %>% clearPopups() %>% addPopups(x, y, popup = content)
+      #add rectangles for testing
+      proxy %>% clearShapes() %>% addRectangles(x, y, x, y)
+      
+    }
+  }
+  
+  
+  #Plot the raster
+  leafletProxy("map") %>%
+    addRasterImage(depth, opacity=0.8, project=FALSE, group="Example", layerId="Example", colors =pal) %>% 
+    addLegend(pal = pal, values = values(depth), title = "Brightness Temp (K)") 
+  
+}
+
+
+shinyApp(ui, server)
+```
+
